@@ -1,327 +1,226 @@
-// ── shots.js — screenshot staging for the four portfolio scenes.
-// Exports: applyShot(name, G). Called by main.js when a ?shot= query is
-// present (see shots.json / scripts/shoot.mjs); it drives the game's
-// real systems into composed frames — it is not part of normal play.
-// ?shot= staging: boot straight into a composed, deterministic scene with
-// the HUD live and no start screen, so screenshots show the real game.
-// The portfolio is a deliberate spread, one system story per frame:
-//   1-cover  — the Strand chase on the coast road: sea, beach, promenade,
-//              towers and the pursuit in a single frame.
-//   2-street — on-foot combat in Old Market at dusk: aim line and reticle,
-//              a fallen rival, stalls, crowd, officers closing on foot.
-//   3-stats  — the pause dossier: full city map, completion ring,
-//              checklist, career stats, medals and save slots.
-//   4-title  — the title screen over a live aerial of the bay at sunset.
-// Every scene is staged AHEAD of the camera and built from the game's
-// real systems — the counters on the stats screen are dressed values in
-// the same CareerStats object the game itself fills.
+// shots.js — deterministic staging for the four screenshots. scripts/
+// shoot.mjs loads the game with ?shot=<name>; main.js builds the world,
+// steps the simulation a few seconds so the city is alive, then calls
+// stageShot, which composes the exact frame: cast, cars, police, HUD
+// state and light. When staging returns, main sets window.__SHOT_READY.
 
-function placeTrafficOnRoad(car, blockCz, roadZ, atX) {
-  car.cz = blockCz;
-  const h = car.half, side = h * 2, per = side * 4;
-  const edges = [
-    { seg: 0, fixed: car.cz - h },   // north edge, travelling +x
-    { seg: 2, fixed: car.cz + h },   // south edge, travelling -x
-  ];
-  for (const e of edges) {
-    if (Math.abs(e.fixed - roadZ) > 4) continue;
-    let s;
-    if (e.seg === 0) s = (atX - car.cx) + h;
-    else s = 2 * side + (car.cx - atX) + h;
-    car.s = ((s % per) + per) % per;
-    car.dir = 1;
-    car.speedNow = 14;
-    car.place();
-    return true;
-  }
+import { THREE } from './three.js';
+import { Car } from './vehicles.js';
+import { CAR_MODELS } from './config.js';
+import { makePersonMesh } from './pedestrians.js';
+
+function policeCarAt(game, x, z, heading, call, role) {
+  const car = new Car(game.world.scene, CAR_MODELS[2], 0x1a2436, { x, z, heading, police: true });
+  game.police.units.push({ kind: 'car', call, role, car, shootCd: 0 });
+  return car;
+}
+
+function footOfficerAt(game, x, z, call) {
+  const mesh = makePersonMesh({ shirt: 0x1c2f4a, skin: 0xf2c79b, pants: 0x141c28, cap: 0x1c2f4a });
+  mesh.position.set(x, 0, z);
+  mesh.rotation.y = Math.atan2(game.player.pos.x - x, game.player.pos.z - z);
+  game.world.scene.add(mesh);
+  game.police.units.push({ kind: 'foot', call, role: 'Foot officer', mesh, heading: mesh.rotation.y, shootCd: 9 });
+  return mesh;
+}
+
+function fakeMission(game, title, objective, markerPos) {
+  game.missions.current = {
+    def: { id: 'staged', title, cash: 0, rp: 0 },
+    stageIdx: 0, elapsed: 47, data: {}, story: true,
+    stages: [{ objective, marker: () => markerPos, check: () => false }],
+  };
+  game.missions.refreshMarker();
+}
+
+export function stageShot(game, name) {
+  const { player, police, world } = game;
+  if (name === 'title') return stageTitle(game);
+  if (name === 'cover') return stageCover(game);
+  if (name === 'street') return stageStreet(game);
+  if (name === 'stats') return stageStats(game);
   return false;
 }
 
-// Put a traffic car on the east edge of a block's loop — the coast road.
-function placeTrafficOnCoast(car, blockCz, atZ, cruise) {
-  const h = car.half, side = h * 2, per = side * 4;
-  car.cx = 160;
-  car.cz = blockCz;
-  car.s = ((side + (atZ - blockCz) + h) % per + per) % per;
-  car.dir = 1;
-  car.speedNow = cruise || 13;
-  if (cruise) car.cruise = cruise;
-  car.place();
+// 4-title: the logo over a live sunset aerial — sea, beach, promenade,
+// boulevard traffic and skyline in one frame, menu and save slots below.
+function stageTitle(game) {
+  game.setHour(18.45);
+  game.mode = 'title';
+  // Two staged saves so the title cards read like a played game.
+  writeStagedSaves(game);
+  game.hud.showTitle();
+  game.shotCamera = {
+    pos: new THREE.Vector3(430, 165, 905),
+    look: new THREE.Vector3(-60, 0, 120),
+  };
+  return true;
 }
 
-// Place a traffic car on a horizontal road through placeTrafficOnRoad.
-// The loop centre is pinned so atX sits at the START of the car's segment
-// (east end for westbound, west end for eastbound): the car then runs
-// straight for a full segment instead of turning off at the next corner
-// mid-scene, and the segment maths always lands it exactly at atX.
-function placeRoad(car, blockCz, roadZ, atX, cruise) {
-  car.cx = atX + (roadZ < blockCz ? 27 : -27);
-  if (placeTrafficOnRoad(car, blockCz, roadZ, atX) && cruise) {
-    car.cruise = cruise;
-    car.speedNow = cruise;
+// 1-cover: a four-star chase on the Strand boulevard at sunset.
+function stageCover(game) {
+  const { player, police } = game;
+  game.setHour(18.5);
+  game.mode = 'play';
+  const hero = game.parkedCars.find((c) => c.isHeroCoupe) || game.parkedCars[0];
+  hero.parked = false;
+  hero.mesh.position.set(30, 0, 447);
+  hero.heading = Math.PI / 2;                    // east along the boulevard
+  hero.mesh.rotation.y = hero.heading;
+  hero.speed = 17;
+  player.inCar = hero;
+  player.pos.copy(hero.pos);
+  player.camPitch = 0.24;
+  // Look east-south-east from behind: the beach, boardwalk and sea fill
+  // the right of the frame while the skyline runs ahead.
+  player.camYaw = 1.22;
+  // The response: two flankers behind, an interceptor pinned ahead, one
+  // more alongside, and CONDOR-EYE overhead.
+  policeCarAt(game, 6, 436, Math.PI / 2, 'KESTREL-1', 'Pursuit lead');
+  policeCarAt(game, 2, 453, Math.PI / 2, 'OTTER-2', 'Flanker');
+  const pin = policeCarAt(game, 86, 447, -Math.PI / 2, 'VIPER-4', 'Interceptor');
+  pin.speed = 0;
+  policeCarAt(game, 44, 431, Math.PI / 2, 'PALMA-3', 'Flanker');
+  police.spawnHeli(player);
+  const heli = police.units.find((u) => u.kind === 'heli');
+  if (heli) heli.mesh.position.set(45, 15, 459);
+  police.heat = 3.4;
+  police.seen = true;
+  // Civilian traffic ahead, fleeing the same way.
+  for (const [x, z, model] of [[120, 449, 1], [150, 436, 3], [105, 436, 4]]) {
+    const c = new Car(game.world.scene, CAR_MODELS[model], CAR_MODELS[model].colors[0], { x, z, heading: Math.PI / 2 });
+    c.speed = 12;
+    game.extraCars.push(c);
   }
+  fakeMission(game, 'Vanish', 'Lose the heat — reach the Strand safehouse', { x: -64, z: 452 });
+  game.hud.say('Mira Solano', 'Plates are hot and CONDOR-EYE has us, Ren — break their line of sight!');
+  return true;
 }
 
-// Park spare cars as set dressing: rows of [x, z, heading] along a curb.
-function parkRow(spares, from, spots) {
-  for (let i = 0; i < spots.length; i++) {
-    const car = spares[from + i];
-    if (car) car.setPos(spots[i][0], spots[i][1], spots[i][2]);
-  }
+// A market stall built just for the street frame, so the shot always has
+// its awnings and crates whatever the city's seed dealt elsewhere.
+function stallAt(game, x, z, rotY, stripeA, stripeB) {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const g2 = c.getContext('2d');
+  for (let i = 0; i < 8; i++) { g2.fillStyle = i % 2 ? stripeA : stripeB; g2.fillRect(i * 8, 0, 8, 64); }
+  const tex = new THREE.CanvasTexture(c);
+  const stall = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.BoxGeometry(5.4, 2.2, 3.2),
+    new THREE.MeshLambertMaterial({ color: 0xa9743f }));
+  base.position.y = 1.1;
+  base.castShadow = true;
+  stall.add(base);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.18, 4.4),
+    new THREE.MeshLambertMaterial({ map: tex }));
+  roof.position.y = 3.1;
+  roof.rotation.z = 0.08;
+  stall.add(roof);
+  const goods = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.5, 2.2),
+    new THREE.MeshLambertMaterial({ color: 0xd8642c }));
+  goods.position.y = 2.45;
+  stall.add(goods);
+  stall.position.set(x, 0, z);
+  stall.rotation.y = rotY;
+  game.world.scene.add(stall);
+  return stall;
 }
 
-function dressStats(G, cash, rp, standing) {
-  G.cash = cash;
-  G.rp = rp;
-  G.standing = standing;
-  G.hud.setCash(G.cash);
-  G.hud.setRadio(G.audio.stationName());
+// 2-street: dusk gunfight in the Old Market, a rival down, officers closing.
+function stageStreet(game) {
+  const { player, police, combat, effects } = game;
+  game.setHour(19.15);
+  game.mode = 'play';
+  player.pos.set(-322, 0, 84);
+  player.heading = -Math.PI / 2 + 0.25;          // facing west down the lane
+  player.mesh.position.copy(player.pos);
+  player.mesh.rotation.y = player.heading;
+  player.camYaw = player.heading;
+  player.camPitch = 0.3;
+  combat.unlockGuns();
+  combat.current = 1;                            // Kestrel-9 in hand
+  // Stalls crowd the lane the fight happens in.
+  stallAt(game, -338, 66, 0.3, '#16a085', '#f5f0e6');
+  stallAt(game, -342, 102, -0.2, '#e67e22', '#f5f0e6');
+  stallAt(game, -358, 84, 1.2, '#8e44ad', '#f5f0e6');
+  // The fallen rival, and two of his friends still up behind the stalls.
+  const fallen = combat.spawnRival(-334, 82, { alerted: true });
+  fallen.alive = false;
+  fallen.mesh.rotation.x = -Math.PI / 2;
+  fallen.mesh.position.y = 0.25;
+  combat.spawnRival(-352, 72, { alerted: true });
+  combat.spawnRival(-354, 94, { alerted: true });
+  // SBPD foot officers closing in from the west, either side of the lane.
+  footOfficerAt(game, -344, 62, 'FOOT-1');
+  footOfficerAt(game, -342, 106, 'FOOT-2');
+  policeCarAt(game, -356, 122, Math.PI / 2, 'KESTREL-1', 'Pursuit lead');
+  police.heat = 2.4;
+  police.seen = true;
+  // Bystanders by the stalls.
+  for (const [x, z, shirt] of [[-330, 64, 0xf2b21b], [-316, 100, 0xe8e3d8], [-340, 104, 0x2a9d8f], [-312, 66, 0xd95f43]]) {
+    const m = makePersonMesh({ shirt, skin: 0xc68863, pants: 0x2b2d42 });
+    m.position.set(x, 0, z);
+    m.rotation.y = Math.random() * 6;
+    game.world.scene.add(m);
+  }
+  // The held tracer from Ren's Kestrel to the fallen rival, muzzle lit.
+  effects.holdTracers = true;
+  const from = new THREE.Vector3(player.pos.x - 0.4, 1.45, player.pos.z - 0.2);
+  const to = new THREE.Vector3(fallen.pos.x, 0.7, fallen.pos.z);
+  effects.tracer(from, to, 0xffe9a3);
+  effects.muzzle(from);
+  fakeMission(game, 'Rival Wreck', 'Wreck the rival coupe and scatter its crew', { x: -446, z: 116 });
+  game.shotPrompt = 'Mouse — fire · duck behind a stall to break their aim';
+  game.hud.say('Kiki Amara', 'Two down the lane and SBPD foot units behind them — I count six guns, Ren.');
+  return true;
 }
 
-// Dress a pedestrian as an SBPD foot officer: navy torso and arms (they
-// share one material), dark trousers — then walk them at the player.
-function makeOfficer(G, ped, x, z) {
-  for (const child of ped.group.children) {
-    const h = child.geometry && child.geometry.parameters && child.geometry.parameters.height;
-    if (h === 0.72) child.material.color.setHex(0x22355c);       // torso + arms
-    else if (h === 0.78) child.material.color.setHex(0x161d29);  // legs
-  }
-  ped.staged = true;
-  ped.state = 'wander';
-  ped.x = x; ped.z = z;
-  ped.tx = G.player.x; ped.tz = G.player.z;
-  ped.heading = Math.atan2(G.player.x - x, G.player.z - z);
-  ped.group.position.set(x, 0, z);
-  ped.group.rotation.y = ped.heading;
+// 3-stats: the pause dossier of a career well under way.
+function stageStats(game) {
+  game.setHour(11.2);
+  game.mode = 'dossier';
+  game.player.pos.set(60, 0, -40);
+  const rich = {
+    cash: 12480, rp: 1150,
+    storyDone: ['first-wheels', 'parcel-run', 'vanish', 'rival-wreck', 'harbor-sprint'],
+    medals: { 'first-wheels': 'gold', 'parcel-run': 'gold', 'vanish': 'silver', 'rival-wreck': 'gold', 'harbor-sprint': 'bronze' },
+    missionTimes: { 'first-wheels': 121, 'parcel-run': 233, 'vanish': 188, 'rival-wreck': 240, 'harbor-sprint': 201 },
+    courierDone: 5, racesWon: 1, stunts: 5, longestLeap: 23,
+    takedowns: 6, carsStolen: 9, copsEscaped: 3, crewUses: 11,
+    abilitiesUsed: ['mira', 'theo', 'kiki'],
+    districtsWorked: ['strand', 'market', 'downtown', 'marina', 'heights'],
+    distanceKm: 38.6, starsFound: 12, playSeconds: 2740,
+  };
+  game.stats.deserialize(rich);
+  game.collectibles.restoreTaken([0, 1, 2, 4, 5, 7, 9, 11, 13, 15, 17, 19]);
+  writeStagedSaves(game);
+  fakeMission(game, 'Night Run', 'Reach the Heights overlook before the clock dies', { x: -436, z: -548 });
+  game.hud.showDossier();
+  return true;
 }
 
-export function applyShot(name, G) {
-  if (name === 'title') {
-    // The title screen: no run starts — the game sits in its menu state,
-    // the city idling below the camera at sunset, two save slots already
-    // written by earlier careers.
-    G.world.setTimeOfDay('dusk');
-    G.saves.write(0, {}, {
-      act: 'Act III — Wreck the Regent', mission: 'Wreck the Regent',
-      completion: 58.3, cash: 5120, rp: 480,
-    });
-    G.saves.write(1, {}, {
-      act: 'Act V — The Marina Job', mission: 'The Marina Job',
-      completion: 86.1, cash: 12480, rp: 1150,
-    });
-    // Pin the camera LOW over the water, south-east of the island,
-    // looking north-west up the shore: the frame stacks sea and foam
-    // at the bottom, then wet sand, beach, boardwalk and promenade,
-    // the Strand boulevard with its traffic, and the tower skyline
-    // behind — one sunset panorama, filled edge to edge.
-    G.menuOrbit = 0.31;
-    G.menuCam = { r: 295, h: 27 };
-    // The boulevard alive for the menu: a westbound stream spread the
-    // whole length of the Strand road, coast-road traffic climbing the
-    // east shore, parked rows on the south curb.
-    placeRoad(G.traffic[0], 160, 192, 168, 13);
-    placeRoad(G.traffic[2], 160, 192, 118, 13);
-    placeRoad(G.traffic[4], 160, 192, 62, 13);
-    placeRoad(G.traffic[6], 160, 192, 6, 13);
-    placeRoad(G.traffic[8], 160, 192, -58, 13);
-    placeRoad(G.traffic[10], 160, 192, -124, 13);
-    placeRoad(G.traffic[12], 160, 192, -178, 13);
-    placeTrafficOnCoast(G.traffic[14], 160, 150, 12);
-    placeTrafficOnCoast(G.traffic[16], 96, 96, 12);
-    placeTrafficOnCoast(G.traffic[18], 32, 30, 12);
-    const spare = G.parkedCars.filter((c) => c !== G.targetCar);
-    parkRow(spare, 0, [
-      [168, 198.5, Math.PI / 2], [138, 198.5, Math.PI / 2], [104, 198.5, Math.PI / 2],
-      [66, 198.5, Math.PI / 2], [22, 198.5, Math.PI / 2], [-30, 198.5, Math.PI / 2],
-      [-84, 198.5, Math.PI / 2], [-140, 198.5, Math.PI / 2],
-    ]);
-    parkRow(spare, 8, [
-      [176.5, 150, 0], [176.5, 108, 0], [176.5, 58, 0],
-    ]);
-    // People on the shore strip: promenade strollers, bench sitters
-    // watching the sunset, browsers at the boardwalk stalls, a crowd
-    // down on the sand among the umbrellas.
-    G.peds.stageCrowd(-40, 210, 6, 14);
-    G.peds.stageCrowd(90, 208, 5, 12);
-    G.peds.stageCrowd(30, 240, 5, 10);
-    G.peds.stageCrowd(-110, 238, 4, 10);
-    G.peds.stageSitters(20, 214.5, 3);
-    G.peds.stageSitters(120, 214.5, 2);
-    G.peds.stageBrowsers(-66, 234.8, 2, 0);
-    G.peds.stageBrowsers(56, 234.8, 2, 0);
-    G.peds.stageCrossers(150, 196, 2, 0, 1);
-    G.hud.fillTitle(G);
-    G.hud.showScreen('startScreen');
-    return;
-  }
-
-  G.beginPlay({ fresh: true, shot: true });
-  G.cash = 1240;
-  G.hud.setCash(G.cash);
-
-  if (name === 'cover') {
-    // The chase runs NORTH up the coast road (x=189.5 lane) toward the
-    // Strand junction, camera behind and low: towers of the east column
-    // on the left, the east promenade on the right, and dead ahead the
-    // promenade crossing, the beach and the sea filling the top of the
-    // frame. Varied terrain in one shot, not a sliver at the edge.
-    G.missions.startAt(3);
-    dressStats(G, 8450, 720, { strand: 84, bankrow: 40, market: 25, midtown: 44 });
-    G.health = 82; G.armour = 55;
-    // A sport-silhouette hero — spoiler, raked glass, two-tone paint.
-    const car = G.parkedCars.find((c) => c !== G.targetCar && c.style === 'sport')
-      || G.parkedCars.find((c) => c !== G.targetCar && c.style === 'car')
-      || G.parkedCars.find((c) => c !== G.targetCar) || G.parkedCars[0];
-    G.enterCar(car, true);
-    car.group.userData.body.material.color.setHex(0xff6b35);
-    car.modelName = 'Sirocco Sport';
-    car.damage = 0.22;
-    // Demo-drive cruise (~16 u/s, held by the auto-throttle): the end
-    // position varies with the machine's frame rate, so the dressing
-    // below spans the whole plausible stretch, z 90–200 — the frame is
-    // composed wherever along it the shutter catches the convoy.
-    car.setPos(189.5, 55, 0);
-    car.vel.x = 0; car.vel.z = 26; car.speed = 26;
-    G.demoDrive = true;
-    G.camDistMul = 0.92;
-    G.camHeightMul = 0.82;
-    G.police.setStars(4);
-    G.police.heliStage = { dx: -20, dz: 34, dy: 15 };
-    G.police.heli.cone.visible = false; // a searchlight beam reads wrong at noon
-    // Flankers spawned already in formation off the rear quarters, a
-    // third unit trailing — the followOffset maths is heading-relative,
-    // so the formation holds as the convoy runs north.
-    // Two units ride AHEAD of the hero, flanking the lane at mid-frame
-    // distance (a trailing offset puts them on top of the chase camera
-    // — two giant quarter-panels and nothing else). A third trails.
-    const p1 = G.police.spawnAt(194, 61, 0); p1.followOffset = { back: -6, side: -4.5 };
-    const p2 = G.police.spawnAt(185, 61, 0); p2.followOffset = { back: -6, side: 4.5 };
-    const p3 = G.police.spawnAt(189.5, 31, 0); p3.followOffset = { back: 24, side: 0 };
-    // Intercept cruisers pinned along the run: one on the promenade
-    // shoulder mid-stretch, two more at the junction and on the Strand,
-    // noses angled at the road the convoy is about to cross.
-    G.police.spawnAt(200, 150, -0.7, 'block');
-    G.police.spawnAt(178, 203, 0.8, 'block');
-    G.police.spawnAt(150, 198.5, Math.PI / 2 + 0.4, 'block');
-    G.police.holdSpawns = true;
-    // Northbound traffic just ahead in the lane, pulling away gently
-    // and turning the Strand corner as the convoy arrives, so the
-    // junction ahead is alive with crossing traffic.
-    placeTrafficOnCoast(G.traffic[4], 160, 168, 14);
-    placeTrafficOnCoast(G.traffic[6], 160, 186, 13);
-    // Westbound Strand traffic crossing the junction ahead.
-    placeRoad(G.traffic[10], 160, 192, 140, 16);
-    placeRoad(G.traffic[12], 160, 192, 118, 16);
-    // Parked rows: the west curb of the coast road, the Strand curb.
-    const spare = G.parkedCars.filter((c) => c !== car && c !== G.targetCar);
-    parkRow(spare, 0, [
-      [176.5, 104, 0], [176.5, 122, 0], [176.5, 140, 0],
-      [176.5, 164, 0], [176.5, 188, 0],
-    ]);
-    parkRow(spare, 5, [
-      [150, 198.5, Math.PI / 2], [128, 198.5, Math.PI / 2],
-    ]);
-    // People living in the frame: promenade strollers east and south,
-    // crowds crossing the coast road at two depths, sitters on the
-    // promenade benches, browsers at the boardwalk stall by the beach.
-    G.peds.stageCrowd(150, 208, 5, 12);
-    G.peds.stageCrowd(205, 182, 5, 10);
-    G.peds.stageCrowd(205, 120, 4, 10);
-    G.peds.stageCrowd(160, 182, 4, 10);
-    G.peds.stageCrossers(184, 194, 3, 1, 0);
-    G.peds.stageCrossers(184, 122, 2, 1, 0);
-    G.peds.stageSitters(190, 212, 2);
-    G.peds.stageBrowsers(180, 234.8, 2, 0);
-    G.snapCamera();
-    return;
-  }
-
-  if (name === 'street') {
-    // On-foot combat in Old Market at dusk: Ren's pistol is up, the shot
-    // hangs in the air as a tracer, a rival is down in front of the
-    // market hall stall, and the law answers on wheels AND on foot.
-    G.world.setTimeOfDay('dusk');
-    G.missions.startAt(1);
-    dressStats(G, 2310, 260, { market: 47, strand: 30 });
-    G.health = 64; G.armour = 20;
-    G.combat.select(1);
-    G.camDistMul = 1.05;
-    G.camHeightMul = 1.0;
-    G.player.setPos(-79, -74, 1.17);
-    // Crowd first, so the named pieces below get fresh pedestrians.
-    G.peds.stageCrowd(-84, -60, 6, 9);
-    G.peds.stageCrowd(-62, -84, 5, 8);
-    G.peds.stageBrowsers(-66.5, -72.5, 2, 2.2);
-    G.peds.stageCrossers(-56, -80, 3, 0, 1);
-    // Two SBPD officers on foot, closing on Ren from either side.
-    const off1 = G.peds.peds.find((p) => !p.staged && !p.scooter && p.state !== 'fallen');
-    if (off1) makeOfficer(G, off1, -64, -78);
-    const off2 = G.peds.peds.find((p) => !p.staged && !p.scooter && p.state !== 'fallen');
-    if (off2) makeOfficer(G, off2, -90, -62);
-    // The rival, down in front of the stall — staged last so nothing
-    // moves him, and the crime counter stays clean. He lies far enough
-    // ahead to clear the dialogue box in frame, in a coral shirt loud
-    // enough that a body on the ground cannot be missed.
-    const victim = G.peds.peds.find((p) => !p.staged && p.state !== 'fallen') || G.peds.peds[30];
-    for (const child of victim.group.children) {
-      const h = child.geometry && child.geometry.parameters && child.geometry.parameters.height;
-      if (h === 0.72) child.material.color.setHex(0xe85447);
-    }
-    victim.x = -69; victim.z = -68;
-    victim.group.position.set(victim.x, 0, victim.z);
-    G.peds.forceFall(victim);
-    victim.timer = 999; // stay down until the shutter has fired
-    G.peds.hitEvents = 0; // staged, not a fresh crime
-    // The shot itself: a held tracer from Ren's muzzle to the rival,
-    // and the muzzle flash frozen with it.
-    const fx = Math.sin(1.17), fz = Math.cos(1.17);
-    const from = { x: G.player.x + fx * 0.7, y: 1.35, z: G.player.z + fz * 0.7 };
-    G.combat.stageTracer(from, { x: victim.x, y: 0.5, z: victim.z });
-    G.combat.flash.position.set(from.x, from.y, from.z);
-    G.combat.flash.visible = true;
-    G.combat.flashT = 999;
-    // Traffic on the cross street: two eastbound, one oncoming.
-    placeRoad(G.traffic[0], -32, -64, -20);
-    placeRoad(G.traffic[2], -32, -64, -52, 9);
-    placeRoad(G.traffic[4], -96, -64, 10, 13);
-    // Parked cars hug both curbs around the intersection.
-    const spare = G.parkedCars.filter((c) => c !== G.targetCar);
-    parkRow(spare, 0, [
-      [-50, -74.5, Math.PI / 2], [-38, -53.5, Math.PI / 2], [-26, -74.5, Math.PI / 2],
-      [-58, -53.5, Math.PI / 2], [-74.5, -44, 0], [-53.5, -46, 0],
-    ]);
-    G.police.setStars(2);
-    // One cruiser already angled across the street; one more rolling in.
-    G.police.spawnAt(-54, -75, Math.PI / 2 + 0.5, 'block');
-    const p2 = G.police.spawnAt(-112, -64, Math.PI / 2);
-    p2.speedCap = 8;
-    G.police.holdSpawns = true;
-    G.snapCamera();
-    return;
-  }
-
-  if (name === 'stats') {
-    // The pause dossier, mid-career: five of seven story jobs done, a
-    // medal row with one B in it, a dozen stars found, the Strand chase
-    // frozen behind the panel. All of it lives in the same CareerStats
-    // and save-slot objects the game itself writes.
-    G.missions.startAt(5);
-    dressStats(G, 8450, 720, { strand: 84, bankrow: 66, market: 47, midtown: 44, palm: 22 });
-    Object.assign(G.stats, {
-      carsStolen: 23, copsEscaped: 9, distanceDriven: 48200, longestJump: 31,
-      takedowns: 14, racesWon: 1, stuntJumps: 5, districtJobs: 5, crewAbilitiesUsed: 17,
-    });
-    G.stats.medals = { 0: 'S', 1: 'A', 2: 'A', 3: 'B', 4: 'A' };
-    G.collectibles.setFound([0, 1, 2, 4, 5, 7, 8, 10, 12, 14, 16, 18]);
-    const car = G.parkedCars.find((c) => c !== G.targetCar && c.style === 'sport')
-      || G.parkedCars.find((c) => c !== G.targetCar) || G.parkedCars[0];
-    G.enterCar(car, true);
-    car.setPos(96, 189.5, -Math.PI / 2);
-    G.saveGame(); // slot 1 now holds this career, exactly as in play
-    G.pauseGame();
-    return;
-  }
-
-  // Unknown shot name: the cover scene.
-  applyShot('cover', G);
+// Two believable save slots, written through the real save system.
+function writeStagedSaves(game) {
+  const mk = (patch) => {
+    const s = Object.create(Object.getPrototypeOf(game.stats));
+    Object.assign(s, game.stats);
+    s.reset();
+    Object.assign(s, patch);
+    return s;
+  };
+  const slot0 = mk({
+    cash: 12480, rp: 1150,
+    storyDone: ['first-wheels', 'parcel-run', 'vanish', 'rival-wreck', 'harbor-sprint'],
+    medals: { 'first-wheels': 'gold' }, districtsWorked: ['strand', 'market', 'downtown'],
+    starsFound: 12, courierDone: 5, racesWon: 1, stunts: 5, longestLeap: 23,
+    takedowns: 6, carsStolen: 9, copsEscaped: 3, crewUses: 11,
+    abilitiesUsed: ['mira', 'theo', 'kiki'], distanceKm: 38.6, playSeconds: 2740,
+  });
+  game.saves.write(0, slot0, [0, 1, 2, 4, 5, 7, 9, 11, 13, 15, 17, 19]);
+  const slot1 = mk({
+    cash: 1830, rp: 240, storyDone: ['first-wheels', 'parcel-run'],
+    medals: { 'first-wheels': 'silver' }, districtsWorked: ['strand', 'market'],
+    starsFound: 4, courierDone: 1, playSeconds: 640,
+  });
+  game.saves.write(1, slot1, [0, 3, 6, 10]);
 }

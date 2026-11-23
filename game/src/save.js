@@ -1,53 +1,77 @@
-// ── save.js — three localStorage save slots with title-screen summaries.
-// Exports: SLOT_COUNT, SaveSlots (read/write/summaries/latest). main.js
-// writes through G.saveGame(); hud.js lists the slots on the title and
-// pause screens. Slot payloads are opaque to this module.
-// Save slots: three named saves in localStorage. Each slot carries the
-// full progress payload plus a summary — the story act it sits in, the
-// mission, the bay completion and the cash — which is what the title
-// screen lists under the menu and the pause screen offers to overwrite.
-// The legacy single save key still mirrors slot 1 so CONTINUE on the
-// title screen always resumes the most recent game.
+// save.js — three localStorage save slots. A slot stores the career
+// ledger, the taken star indices and a human summary (act, mission,
+// completion, cash) that the title screen and the dossier print on the
+// slot's card without loading the game behind it.
 
-import { SAVE_KEY } from './config.js';
+import { SAVE_KEY_PREFIX, SAVE_SLOTS, STORY_MISSIONS } from './config.js';
+import { CareerStats } from './stats.js';
 
-export const SLOT_COUNT = 3;
-
-export class SaveSlots {
-  key(i) { return `${SAVE_KEY}-slot${i + 1}`; }
-
-  read(i) {
+export class SaveSystem {
+  constructor() {
+    this.storageOk = true;
     try {
-      const raw = window.localStorage.getItem(this.key(i));
+      const probe = SAVE_KEY_PREFIX + 'probe';
+      window.localStorage.setItem(probe, '1');
+      window.localStorage.removeItem(probe);
+    } catch (err) {
+      this.storageOk = false;   // private mode etc: saves simply unavailable
+    }
+  }
+
+  key(slot) { return SAVE_KEY_PREFIX + slot; }
+
+  read(slot) {
+    if (!this.storageOk) return null;
+    try {
+      const raw = window.localStorage.getItem(this.key(slot));
       return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
+    } catch (err) {
+      return null;
+    }
   }
 
-  write(i, payload, summary) {
+  write(slot, stats, starsTaken) {
+    if (!this.storageOk) return false;
+    const data = {
+      version: 1,
+      savedAt: Date.now(),
+      stats: stats.serialize(),
+      starsTaken,
+    };
     try {
-      window.localStorage.setItem(this.key(i), JSON.stringify({
-        payload, summary, when: Date.now(),
-      }));
-    } catch (e) { /* storage off: the visit is the save */ }
+      window.localStorage.setItem(this.key(slot), JSON.stringify(data));
+      return true;
+    } catch (err) {
+      return false;
+    }
   }
 
-  // One summary (or null) per slot, in slot order — title-screen fodder.
+  erase(slot) {
+    if (this.storageOk) window.localStorage.removeItem(this.key(slot));
+  }
+
+  // One summary per slot for the title screen and the dossier: the act the
+  // player reached, the next mission's title, completion and cash. A
+  // scratch ledger does the reading so the live career is never touched.
   summaries() {
     const out = [];
-    for (let i = 0; i < SLOT_COUNT; i++) {
-      const s = this.read(i);
-      out.push(s && s.summary ? { ...s.summary, when: s.when } : null);
+    const probe = new CareerStats();
+    for (let i = 0; i < SAVE_SLOTS; i++) {
+      const data = this.read(i);
+      if (!data) { out.push({ slot: i, empty: true }); continue; }
+      probe.deserialize(data.stats);
+      const done = probe.storyCount;
+      const next = STORY_MISSIONS[done];
+      out.push({
+        slot: i,
+        empty: false,
+        act: next ? next.act : 'Epilogue — Free Roam',
+        mission: next ? next.title : 'Free roam',
+        completion: probe.completion(),
+        cash: probe.cash,
+        when: new Date(data.savedAt),
+      });
     }
     return out;
-  }
-
-  // The slot index of the most recently written save, or -1 when empty.
-  latest() {
-    let best = -1, bestWhen = -1;
-    for (let i = 0; i < SLOT_COUNT; i++) {
-      const s = this.read(i);
-      if (s && s.when > bestWhen) { bestWhen = s.when; best = i; }
-    }
-    return best;
   }
 }

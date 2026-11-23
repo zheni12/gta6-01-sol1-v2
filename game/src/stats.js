@@ -1,144 +1,115 @@
-// ── stats.js — career counters, mission medals and bay completion.
-// Exports: ACT_NAMES, actNameFor, gradeMission, CareerStats. Counters are
-// incremented at the real events in main.js / missions.js / combat.js /
-// collectibles.js; hud.js renders them on the pause dossier screen, and
-// main.js persists them through the save payload.
-// Career statistics: the numbers the pause screen's checklist, career
-// panel, medal row and completion ring are computed from. Every counter
-// is fed by a real event in the game — a car entered that was not yours,
-// a pursuit that cooled to zero stars, a shot that dropped a pedestrian,
-// a ramp launch that landed, a star pickup walked or driven over — so
-// the percentages on the stats screen are earned, never typed in.
+// stats.js — the career ledger: cash, RP, medals, distances and counts,
+// the completion percentage the dossier's ring draws, and the checklist
+// rows beside it. Everything the pause dossier shows comes from here, and
+// everything a save slot stores is this object plus the star indices.
 
-import { clamp, DISTRICTS } from './config.js';
-import { MISSION_NAMES } from './missions.js';
-import { COLLECTIBLE_SPOTS } from './collectibles.js';
-
-// Par times (seconds) per story mission: beating 85% of par with a clean
-// car earns the S. Damage taken during the job knocks the grade down.
-const MISSION_PAR = [80, 95, 130, 105, 90, 75, 140];
-const GRADE_LETTERS = ['D', 'C', 'B', 'A', 'S'];
-
-// The story, told in acts — a save slot is named by the act it sits in.
-export const ACT_NAMES = [
-  'Act I — First Wheels',
-  'Act II — Cross-Town Package',
-  'Act II — Hot Delivery',
-  'Act III — Wreck the Regent',
-  'Act III — Harbor Sprint',
-  'Act IV — The Clock Is Ticking',
-  'Act V — The Marina Job',
-];
-
-export function actNameFor(missionIdx, storyDone) {
-  if (storyDone || missionIdx >= ACT_NAMES.length) return 'Epilogue — The Bay Is Yours';
-  return ACT_NAMES[missionIdx];
-}
-
-export function gradeMission(idx, elapsedSecs, damageTaken) {
-  const par = MISSION_PAR[idx] || 100;
-  let g = 1;
-  if (elapsedSecs <= par * 0.85) g = 4;
-  else if (elapsedSecs <= par * 1.1) g = 3;
-  else if (elapsedSecs <= par * 1.45) g = 2;
-  if (damageTaken > 60) g -= 2;
-  else if (damageTaken > 30) g -= 1;
-  return GRADE_LETTERS[clamp(g, 0, GRADE_LETTERS.length - 1)];
-}
+import { STORY_MISSIONS, RANKS, STAR_COUNT } from './config.js';
 
 export class CareerStats {
   constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.cash = 120;
+    this.rp = 0;
+    this.storyDone = [];          // mission ids, in completion order
+    this.medals = {};             // mission id -> 'gold' | 'silver' | 'bronze'
+    this.missionTimes = {};       // mission id -> best seconds
+    this.courierDone = 0;
+    this.racesWon = 0;
+    this.stunts = 0;
+    this.longestLeap = 0;
+    this.takedowns = 0;
     this.carsStolen = 0;
     this.copsEscaped = 0;
-    this.distanceDriven = 0;   // metres behind a wheel
-    this.longestJump = 0;      // metres of one airborne leap
-    this.takedowns = 0;        // pedestrians dropped by gunfire
-    this.racesWon = 0;
-    this.stuntJumps = 0;
-    this.collectiblesFound = 0;
-    this.districtJobs = 0;     // courier jobs finished in free roam
-    this.crewAbilitiesUsed = 0;
-    this.medals = {};          // mission index -> grade letter
+    this.crewUses = 0;
+    this.abilitiesUsed = [];      // crew member ids
+    this.districtsWorked = [];    // district ids with a completed job
+    this.distanceKm = 0;
+    this.starsFound = 0;
+    this.playSeconds = 0;
   }
 
-  recordMission(idx, elapsedSecs, damageTaken) {
-    this.medals[idx] = gradeMission(idx, elapsedSecs, damageTaken);
+  get storyCount() { return this.storyDone.length; }
+  get goldCount() { return Object.values(this.medals).filter((m) => m === 'gold').length; }
+
+  rank() {
+    let current = RANKS[0], next = null;
+    for (let i = 0; i < RANKS.length; i++) {
+      if (this.rp >= RANKS[i].rp) { current = RANKS[i]; next = RANKS[i + 1] || null; }
+    }
+    const span = next ? next.rp - current.rp : 1;
+    const frac = next ? (this.rp - current.rp) / span : 1;
+    return { name: current.name, next, frac };
   }
 
-  goldRatings() {
-    return Object.values(this.medals).filter((m) => m === 'S' || m === 'A').length;
+  medalFor(missionId, seconds) {
+    const def = STORY_MISSIONS.find((m) => m.id === missionId);
+    if (!def) return 'bronze';
+    if (seconds <= def.goldTime) return 'gold';
+    if (seconds <= def.goldTime * 1.45) return 'silver';
+    return 'bronze';
   }
 
-  districtsFriendly(G) {
-    return DISTRICTS.filter((d) => (G.standing[d.id] || 0) >= 20).length;
+  completeStoryMission(def, seconds) {
+    if (!this.storyDone.includes(def.id)) this.storyDone.push(def.id);
+    const medal = this.medalFor(def.id, seconds);
+    const order = { bronze: 0, silver: 1, gold: 2 };
+    if (!this.medals[def.id] || order[medal] > order[this.medals[def.id]]) this.medals[def.id] = medal;
+    if (!this.missionTimes[def.id] || seconds < this.missionTimes[def.id]) this.missionTimes[def.id] = Math.round(seconds);
+    this.cash += def.cash;
+    this.rp += def.rp;
+    return medal;
   }
 
-  missionsDone(G) {
-    if (G.storyDone) return MISSION_NAMES.length;
-    return Math.min(MISSION_NAMES.length, G.missions ? G.missions.idx : G.missionIdx);
+  workIn(districtId) {
+    if (districtId && !this.districtsWorked.includes(districtId)) this.districtsWorked.push(districtId);
   }
 
-  // The checklist the pause screen prints, each row a real counter.
-  checklist(G) {
+  useAbility(memberId) {
+    this.crewUses++;
+    if (!this.abilitiesUsed.includes(memberId)) this.abilitiesUsed.push(memberId);
+  }
+
+  // The dossier checklist: label, have, want, and the share of the whole
+  // game's completion this row carries.
+  checklist() {
     return [
-      { label: 'STORY MISSIONS', have: this.missionsDone(G), total: MISSION_NAMES.length },
-      { label: 'STREET RACES WON', have: Math.min(this.racesWon, 1), total: 1 },
-      { label: 'STUNT JUMPS', have: Math.min(this.stuntJumps, 8), total: 8 },
-      { label: 'COLLECTIBLES', have: this.collectiblesFound, total: COLLECTIBLE_SPOTS.length },
-      { label: 'COURIER JOBS', have: Math.min(this.districtJobs, 10), total: 10 },
-      { label: 'DISTRICTS FRIENDLY', have: this.districtsFriendly(G), total: DISTRICTS.length },
-      { label: 'CREW RECRUITED', have: 3, total: 3 },
-      { label: 'GOLD MISSION RATINGS', have: this.goldRatings(), total: MISSION_NAMES.length },
+      { label: 'Story missions', have: this.storyCount, want: STORY_MISSIONS.length, weight: 40 },
+      { label: 'Golden Solmar stars', have: this.starsFound, want: STAR_COUNT, weight: 15 },
+      { label: 'Courier jobs', have: Math.min(this.courierDone, 10), want: 10, weight: 10 },
+      { label: 'Races won', have: Math.min(this.racesWon, 4), want: 4, weight: 10 },
+      { label: 'Stunt jumps', have: Math.min(this.stunts, 8), want: 8, weight: 8 },
+      { label: 'Districts friendly', have: this.districtsWorked.length, want: 5, weight: 7 },
+      { label: 'Crew abilities used', have: this.abilitiesUsed.length, want: 3, weight: 5 },
+      { label: 'Gold ratings', have: this.goldCount, want: STORY_MISSIONS.length, weight: 5 },
     ];
   }
 
-  // Bay completion: a weighted blend of the checklist, 0…100.
-  completion(G) {
-    const parts = [
-      [this.missionsDone(G) / MISSION_NAMES.length, 34],
-      [this.collectiblesFound / COLLECTIBLE_SPOTS.length, 20],
-      [Math.min(this.stuntJumps, 8) / 8, 12],
-      [Math.min(this.racesWon, 1), 8],
-      [Math.min(this.districtJobs, 10) / 10, 10],
-      [this.districtsFriendly(G) / DISTRICTS.length, 8],
-      [this.goldRatings() / MISSION_NAMES.length, 5],
-      [1, 3], // the crew is together from the first job
-    ];
+  completion() {
     let pct = 0;
-    for (const [frac, weight] of parts) pct += clamp(frac, 0, 1) * weight;
-    return Math.round(pct * 10) / 10;
+    for (const row of this.checklist()) pct += row.weight * Math.min(1, row.have / row.want);
+    return Math.round(pct);
   }
 
-  // Career rows for the pause screen.
-  careerRows() {
-    return [
-      ['CARS STOLEN', String(this.carsStolen)],
-      ['COPS ESCAPED', String(this.copsEscaped)],
-      ['DISTANCE DRIVEN', `${(this.distanceDriven / 1000).toFixed(1)} KM`],
-      ['LONGEST JUMP', `${Math.round(this.longestJump)} M`],
-      ['PEOPLE TAKEN OUT', String(this.takedowns)],
-      ['CREW ABILITIES USED', String(this.crewAbilitiesUsed || 0)],
-    ];
-  }
-
-  toJSON() {
+  serialize() {
     return {
-      carsStolen: this.carsStolen, copsEscaped: this.copsEscaped,
-      distanceDriven: Math.round(this.distanceDriven), longestJump: this.longestJump,
-      takedowns: this.takedowns, racesWon: this.racesWon,
-      stuntJumps: this.stuntJumps, collectiblesFound: this.collectiblesFound,
-      districtJobs: this.districtJobs, medals: this.medals,
-      crewAbilitiesUsed: this.crewAbilitiesUsed || 0,
+      cash: this.cash, rp: this.rp, storyDone: this.storyDone, medals: this.medals,
+      missionTimes: this.missionTimes, courierDone: this.courierDone, racesWon: this.racesWon,
+      stunts: this.stunts, longestLeap: this.longestLeap, takedowns: this.takedowns,
+      carsStolen: this.carsStolen, copsEscaped: this.copsEscaped, crewUses: this.crewUses,
+      abilitiesUsed: this.abilitiesUsed, districtsWorked: this.districtsWorked,
+      distanceKm: Math.round(this.distanceKm * 100) / 100, starsFound: this.starsFound,
+      playSeconds: Math.round(this.playSeconds),
     };
   }
 
-  fromJSON(s) {
-    if (!s || typeof s !== 'object') return;
-    for (const k of ['carsStolen', 'copsEscaped', 'distanceDriven', 'longestJump',
-      'takedowns', 'racesWon', 'stuntJumps', 'collectiblesFound', 'districtJobs',
-      'crewAbilitiesUsed']) {
-      if (typeof s[k] === 'number') this[k] = s[k];
+  deserialize(data) {
+    this.reset();
+    if (!data) return;
+    for (const k of Object.keys(this.serialize())) {
+      if (data[k] !== undefined) this[k] = data[k];
     }
-    if (s.medals && typeof s.medals === 'object') this.medals = s.medals;
   }
 }
