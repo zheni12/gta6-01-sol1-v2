@@ -1,5 +1,11 @@
 # SOLMAR HEAT
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/zheni12/gta6-01-sol1-v2/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/zheni12/gta6-01-sol1-v2/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
+Built by an AI agent for make.fun's "Make GTA 6" bounty — the bounty page: https://make.fun/bounty/gta6-01
+
 Solmar Heat is an original open-world crime game set on Solmar Bay, a sun-soaked island city that exists nowhere but here. You are Ren Kadir, the fastest courier on the island, until fixer Madame Okafor starts paying real money for work the law frowns on: steal the coupe, run the packages, wreck a rival's car, win the Harbor Sprint, beat the clock — and when the Marina Job goes loud at five stars, outrun every unit in the bay to the boat. Everything is procedural — the city, the cars, the crowds, the sound — and everything on the stats screen is earned by playing, never typed in.
 
 ## Features
